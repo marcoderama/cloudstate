@@ -59,6 +59,7 @@ import com.google.protobuf.{ListValue, Struct, Value}
 import io.cloudstate.protocol.entity.{ClientAction, EntityDiscovery, Failure, Reply, UserFunctionError}
 import io.cloudstate.proxy.EntityDiscoveryManager.ServableEntity
 import io.cloudstate.proxy.entity.{UserFunctionCommand, UserFunctionReply}
+import io.cloudstate.proxy.protobuf.Options
 
 // References:
 // https://cloud.google.com/endpoints/docs/grpc-service-config/reference/rpc/google.api#httprule
@@ -370,6 +371,7 @@ object HttpApi {
     override final def isDefinedAt(req: HttpRequest): Boolean =
       (methodPattern == ANY_METHOD || req.method == methodPattern) && pathMatches(urlPattern, req.uri.path, nofx)
 
+    // FIXME Rewrite this to using Serve.CommandHandler.usingFlow
     override final def apply(req: HttpRequest): Future[HttpResponse] =
       parseCommand(req).flatMap(command => sendCommand(command).map(createResponse)).recover {
         case ire: IllegalRequestException => HttpResponse(ire.status.intValue, entity = ire.status.reason)
@@ -392,6 +394,7 @@ object HttpApi {
       )
     }
 
+    // TODO investigate how to handle streaming inputs and streaming outputs
     private[this] final def sendCommand(command: UserFunctionCommand): Future[DynamicMessage] =
       userFunctionRouter.handleUnary(methDesc.getService.getFullName, command).map { reply =>
         reply.clientAction match {
@@ -468,25 +471,6 @@ object HttpApi {
     }
   }
 
-  /**
-   * ScalaPB doesn't do this conversion for us unfortunately.
-   * By doing it, we can use HttpProto.entityKey.get() to read the entity key nicely.
-   */
-  private[this] final def convertMethodOptions(method: MethodDescriptor): ScalaPBDescriptorProtos.MethodOptions =
-    ScalaPBDescriptorProtos.MethodOptions
-      .fromJavaProto(method.toProto.getOptions)
-      .withUnknownFields(
-        scalapb.UnknownFieldSet(method.getOptions.getUnknownFields.asMap.asScala.map {
-          case (idx, f) =>
-            idx.toInt -> scalapb.UnknownFieldSet.Field(
-              varint = f.getVarintList.asScala.map(_.toLong),
-              fixed64 = f.getFixed64List.asScala.map(_.toLong),
-              fixed32 = f.getFixed32List.asScala.map(_.toInt),
-              lengthDelimited = f.getLengthDelimitedList.asScala
-            )
-        }.toMap)
-      )
-
   final def serve(userFunctionRouter: UserFunctionRouter,
                   entities: Seq[ServableEntity],
                   entityDiscoveryClient: EntityDiscovery)(
@@ -498,7 +482,7 @@ object HttpApi {
     (for {
       entity <- entities.iterator
       method <- entity.serviceDescriptor.getMethods.iterator.asScala
-      rule = AnnotationsProto.http.get(convertMethodOptions(method)) match {
+      rule = AnnotationsProto.http.get(Options.convertMethodOptions(method)) match { // TODO implement support for fully_decode_reserved_expansion
         case Some(rule) =>
           log.info(s"Using configured HTTP API endpoint using [$rule]")
           rule
