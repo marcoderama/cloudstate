@@ -373,6 +373,7 @@ object HttpApi {
 
     // FIXME Rewrite this to using Serve.CommandHandler.usingFlow
     override final def apply(req: HttpRequest): Future[HttpResponse] =
+      // Source.single(req).mapAsyncUnordered(1)(parseCommand).via(router.flowUsing(entityClient, logger)).map(createResponse).recover(recoverIllegalRequest).toMat(Sink.head)(Keep.right)?
       parseCommand(req).flatMap(command => sendCommand(command).map(createResponse)).recover {
         case ire: IllegalRequestException => HttpResponse(ire.status.intValue, entity = ire.status.reason)
       }
